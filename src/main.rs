@@ -1,19 +1,22 @@
+#![feature(nll)]
+
 extern crate clap;
 extern crate rand;
 extern crate clipboard;
 
-use clap::{Arg, App, SubCommand, ArgMatches, ErrorKind};
+use clap::{Arg, App, SubCommand, ArgMatches};
 use std::collections::HashMap;
 use std::{fs, error};
-use core::borrow::Borrow;
+use core::borrow::{Borrow};
 use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufRead, Write, Read};
+use std::io::{BufReader, BufRead, Write};
 use std::error::Error;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 use core::fmt;
 use std::path::Path;
 use std::cmp::Ordering;
+use std::process::exit;
 
 /*const DIR_PATH: &str = "LangGen";
 const SYLLABLES_PATH: &str = "LangGen/syllables.txt";
@@ -223,7 +226,6 @@ impl MyLang {
                 (SyllablePosition::MIDDLE,_) => return true,
                 (SyllablePosition::END,len) => return true,
                 (SyllablePosition::ANY,_) => return true,
-                _ => return false,
             }
         }
         else {
@@ -312,6 +314,16 @@ impl MyLang {
                     occs_count.insert(s.clone(),1);
                 }
             })
+        }
+
+        if self.syllables.len() == 0 {
+            return Err(Box::new(std::fmt::Error)); //TODO:Change this error to something better
+        }
+
+        for syllable in &self.syllables { // Add syllables that werent found in word_db
+            if !occs_count.contains_key(syllable) {
+                occs_count.insert(syllable.clone(),0);
+            }
         }
 
         Ok(occs_count)
@@ -447,8 +459,6 @@ impl MyLang {
         self.syllable_valid_positions = MyLang::get_syllable_valid_positions(&self.config.syllable_valid_pos_path);
     }
 
-    pub fn test(){}
-
     pub fn replace_config(&mut self, config:Config){
         self.config = config;
     }
@@ -461,9 +471,9 @@ enum RandomnessMethod {
 }
 
 trait RandomGen {
-    fn create_words(&mut self, re: &RandomEngine,min:u8,max:u8,count:u8) -> Vec<String>;
-    fn recalculate(&mut self, re: &RandomEngine);
-    fn invalidate_cache(&mut self, re: &RandomEngine);
+    fn create_words(&mut self, lang: &MyLang,min:u8,max:u8,count:u8) -> Vec<String>;
+    fn recalculate(&mut self, lang: &MyLang);
+    fn invalidate_cache(&mut self, lang: &MyLang);
 }
 
 struct CalculatedRandom {
@@ -471,6 +481,15 @@ struct CalculatedRandom {
     temp_map: HashMap<String,f64>,
     sum: u32,
     cache_ready: bool,
+}
+
+fn comp_f64(a: &f64, b: &f64) -> Ordering {
+    if a < b {
+        return Ordering::Less;
+    } else if a > b {
+        return Ordering::Greater;
+    }
+    Ordering::Equal
 }
 
 impl CalculatedRandom {
@@ -483,185 +502,211 @@ impl CalculatedRandom {
         }
     }
 
-    fn comp_f64(a: &f64, b: &f64) -> Ordering {
-        if a < b {
-            return Ordering::Less;
-        } else if a > b {
-            return Ordering::Greater;
-        }
-        Ordering::Equal
+    fn order_temp_map(&mut self) -> Vec<String> {
+        let mut v:Vec<String> = Vec::with_capacity(self.temp_map.len());
+
+        self.temp_map.iter().for_each(|(s,ob)| v.push(s.clone()));
+
+        v.sort_by(|a,b| comp_f64(self.temp_map.get(a).unwrap(),self.temp_map.get(b).unwrap()));
+
+        v
     }
 
-    fn pull_syllable(&mut self, re: &RandomEngine, pos:u8, len:u8) -> String{
+    fn pull_syllable(&mut self, lang: &MyLang, pos:u8, len:u8) -> String{
         if !self.cache_ready {
-            self.init_cache(re);
+            self.init_cache(lang);
         }
 
         self.temp_map.clear();
 
-        for s_po in &re.my_lang.syllables { // Syllable plus one
-            let adjusted_total = self.sum+1;
-
-            let mut offby = 0.0;
-            for (s_o,count) in &self.occ_count {
+        //How would offby change if we pulled this syllable
+        for s_po in &lang.syllables { // List through syllable that may be pulled
+            let mut offby = 0.0; // How much values are off wanted values
+            for (s_o,count) in &self.occ_count { // Compare syllable pulled s_po to others s_o
                 let mut cadj= *count;
                 if s_o == s_po { // If this syllable was pulled
-                    cadj += 1;
+                    cadj += 1; // Add one
                 }
+                //Otherwise it stays the same
 
-                let adj_real = cadj as f64 / adjusted_total as f64;
+                let adj_real = cadj as f64 / self.sum as f64; // Calculate frequency
 
-                offby += (*re.my_lang.occ_wanted.get(s_o) - (adj_real)).abs();
+                offby += (*lang.occ_wanted.get(s_o).unwrap() - (adj_real)).abs(); // Calculate offby for this syllable
             }
-            self.temp_map.insert(s_po.clone(),offby);
+            self.temp_map.insert(s_po.clone(),offby); // Add this option to sorted map
         }
 
-        let (s,o) = self.temp_map.iter() // Get one with smallest offby
-            .min_by(|(s1,o1),(s2,o2)|
-                CalculatedRandom::comp_f64(*o1,*o2)).unwrap();
-        s.clone()
 
+//        for s_po in &lang.syllables {
+//            let freq_after = (*self.occ_count.get(s_po).unwrap() as f64 + 1.0) / (self.sum as f64 +1.0);
+//
+//            self.temp_map.insert(s_po.clone(),freq_after);
+
+        for (s,c) in &self.temp_map {
+            println!("{}:{}",s,c);
+        }
+
+        let mut possible_results = Vec::with_capacity(self.order_temp_map().len()/10);
+        let mut i = 0;
+
+        for s in self.order_temp_map(){ // Iterate the sorted map
+            if lang.is_syllable_valid_at_pos(&s,pos,len) {//Until you find a valid char
+                possible_results.push(s);
+
+                i+=1;
+
+                if i == possible_results.capacity()-1 {
+                    break;
+                }
+            }
+        }
+
+        let syllable_result = possible_results[rand::thread_rng().gen_range(0,possible_results.len())].clone();
+
+        if syllable_result == "" { // If no valid char has been found
+            soft_crash(format!("No suitable syllable could be pulled from DB\n 0 out of {} valid",lang.syllables.len())); // Stop
+        }
+
+        // Safe unwrap
+        // Increase occurance of syllable just pulled
+        self.occ_count.insert(syllable_result.clone(),self.occ_count.get(&syllable_result).unwrap()+1);
+
+        // Increase sum
+        self.sum += 1;
+
+        syllable_result
     }
 
-    fn init_cache(&mut self, re: &RandomEngine){
-        self.occ_count = self.my_lang.get_real_occ_as_count().unwrap();
-        self.sum = count.iter().map(|(_,c)| *c).sum::<u32>(); // Make sum of all syllables
+    fn init_cache(&mut self, lang: &MyLang){
+        self.occ_count = lang.get_real_occ_as_count().unwrap();
+        self.sum = self.occ_count.iter().map(|(_,c)| *c).sum::<u32>(); // Make sum of all syllables
         self.cache_ready = true;
-        self.temp_map =  HashMap::with_capacity(re.my_lang.syllables.len());
+        self.temp_map =  HashMap::new();
     }
 }
 
 impl RandomGen for CalculatedRandom {
-    fn create_words(&mut self, re: &RandomEngine, min: u8, max: u8, count: u8) -> Vec<String> {
+    fn create_words(&mut self, lang: &MyLang, min: u8, max: u8, count: u8) -> Vec<String> {
+        let mut result = Vec::with_capacity(count as usize);
 
+        let mut rng = rand::thread_rng();
+        for nth_word in 0..count {
+
+            let chosen_length = rng.gen_range(min,max+1);
+            let mut word = String::new();
+            let mut pos = 0u8;
+
+            for nth_syllable in 0..chosen_length {
+                word.push_str(&self.pull_syllable(lang,pos,chosen_length));
+                pos += 1;
+            }
+
+            result.push(word);
+        }
+
+        result
     }
 
-    fn recalculate(&mut self, re: &RandomEngine) {
-        /* Recalc must be done before every new syllable so it's done
-           In create_words */
+    fn recalculate(&mut self, lang: &MyLang) {
+        /* Recalc is done by pull_syllable */
     }
 
-    fn invalidate_cache(&mut self, re: &RandomEngine) {
-        unimplemented!()
+    fn invalidate_cache(&mut self, lang: &MyLang) {
+        self.init_cache(lang);
     }
 }
 
 struct RandomEngine {
     my_lang:MyLang,
-    occ_adjusted: HashMap<String,f64>,
     rng: ThreadRng,
-    method: RandomnessMethod,
+    random_gen: Box<RandomGen>,
 }
 
 impl RandomEngine {
-    fn new(mut my_lang: MyLang, method : RandomnessMethod) -> RandomEngine {
+    fn new(mut my_lang: MyLang, random_gen : Box<RandomGen>) -> RandomEngine {
         if my_lang.syllables.len() < 1 {
             my_lang.init();
         }
 
         RandomEngine {
             my_lang,
-            occ_adjusted: HashMap::new(),
             rng: rand::thread_rng(),
-            method
+            random_gen
         }
     }
 
-    fn get_or_zero(&self,syllable:&str, map: &HashMap<String,f64>) -> f64 {
-         if let Some(occ) = map.get(syllable) {
-             return occ.clone();
-         }
+//    fn get_or_zero(&self,syllable:&str, map: &HashMap<String,f64>) -> f64 {
+//         if let Some(occ) = map.get(syllable) {
+//             return occ.clone();
+//         }
+//
+//        0.0
+//    }
 
-        0.0
-    }
-
-    fn is_word_db_empty(&self) -> bool {
-        return self.my_lang.occ_real.iter().all(|(s,o)| *o == 0.0);
-    }
+//    fn is_word_db_empty(&self) -> bool {
+//        return self.my_lang.occ_real.iter().all(|(s,o)| *o == 0.0);
+//    }
 
     /*fn calc_adjusted_random_calculated(&mut self) -> HashMap<String,f64> {
 
     }*/
 
 
-    fn calc_adjusted_random_linear(&mut self) -> HashMap<String,f64> {
-        if self.is_word_db_empty() { //Everything is zero, nothing can be adjusted
-            return self.my_lang.occ_wanted.clone();
-        }
-
-        let mut adjusted = HashMap::new();
-
-        for syllable in &self.my_lang.syllables {
-            let wanted = self.get_or_zero(syllable,&self.my_lang.occ_wanted);
-            let real = self.get_or_zero(syllable,&self.my_lang.occ_real);
-
-            let adj:f64 = wanted + wanted * (1.0 - real/wanted);
-
-            adjusted.insert(syllable.clone(),adj);
-        }
-
-        adjusted
-    }
+//    fn calc_adjusted_random_linear(&mut self) -> HashMap<String,f64> {
+//        if self.is_word_db_empty() { //Everything is zero, nothing can be adjusted
+//            return self.my_lang.occ_wanted.clone();
+//        }
+//
+//        let mut adjusted = HashMap::new();
+//
+//        for syllable in &self.my_lang.syllables {
+//            let wanted = self.get_or_zero(syllable,&self.my_lang.occ_wanted);
+//            let real = self.get_or_zero(syllable,&self.my_lang.occ_real);
+//
+//            let adj:f64 = wanted + wanted * (1.0 - real/wanted);
+//
+//            adjusted.insert(syllable.clone(),adj);
+//        }
+//
+//        adjusted
+//    }
 
     pub fn recalc_adjusted_random(&mut self){
-        self.occ_adjusted = match &self.method {
-            RandomnessMethod::Pure => self.my_lang.occ_wanted.clone(),
-            RandomnessMethod::Linear => self.calc_adjusted_random_linear(),
-            RandomnessMethod::Exponential(by) => !unimplemented!(),
-        }
+        self.random_gen.recalculate(&self.my_lang);
     }
 
-    fn pull_random_syllable(&mut self, pos:u8, len:u8, attempts_made:u8) -> String {
-        let rnd:f64 = self.rng.gen();
-
-        let mut result = String::new();
-
-        let mut lower = 0.0;
-
-
-        for (syllable,occ) in &self.occ_adjusted {
-            let upper = lower+occ;
-
-            if rnd >= lower && rnd < upper{
-                result = syllable.clone();
-                break;
-            }
-
-            lower += occ;
-        }
-
-        if !self.my_lang.is_syllable_valid_at_pos(&result,pos,len) {
-            if attempts_made > 100 {panic!("No suitable syllable could be made");}
-            return self.pull_random_syllable(pos,len,attempts_made+1);
-        }
-
-        if result != "" {
-            return result;
-        }
-        panic!("No suitable random syllable was found (is syllable list empty?)")
-    }
-
-    fn create_word(&mut self,min:u8,max:u8) -> String {
-        let len = self.rng.gen_range(min,max+1);
-        let mut word = String::new();
-
-
-
-        for i in 0..len {
-            word += &self.pull_random_syllable(i,len,0);
-        }
-
-        word
-    }
+//    fn pull_random_syllable(&mut self, pos:u8, len:u8, attempts_made:u8) -> String {
+//        let rnd:f64 = self.rng.gen();
+//
+//        let mut result = String::new();
+//
+//        let mut lower = 0.0;
+//
+//
+//        for (syllable,occ) in &self.occ_adjusted {
+//            let upper = lower+occ;
+//
+//            if rnd >= lower && rnd < upper{
+//                result = syllable.clone();
+//                break;
+//            }
+//
+//            lower += occ;
+//        }
+//
+//        if !self.my_lang.is_syllable_valid_at_pos(&result,pos,len) {
+//            if attempts_made > 100 {panic!("No suitable syllable could be made");}
+//            return self.pull_random_syllable(pos,len,attempts_made+1);
+//        }
+//
+//        if result != "" {
+//            return result;
+//        }
+//        panic!("No suitable random syllable was found (is syllable list empty?)")
+//    }
 
     pub fn create_words(&mut self,min:u8,max:u8,count:u8) -> Vec<String> {
-        let mut res = Vec::new();
-
-        for i in 0..count {
-            res.push(self.create_word(min,max));
-        }
-
-        res
+        self.random_gen.create_words(&self.my_lang,min,max,count)
     }
 
 }
@@ -828,7 +873,13 @@ fn validate_config(my_lang:&MyLang) -> bool {
     let mut valid = true;
 
     for file in my_lang.config.get_invalid_files(){
-        eprintln!("File {} not found",file);
+        if !file.contains(".") {
+            eprintln!("Directory {} not found",file);
+        }
+        else {
+            eprintln!("File {} not found",file);
+        }
+
         valid = false;
     }
 
@@ -901,7 +952,7 @@ fn create_path_and_file(path: &str) -> Result<(),Box<Error>> {
 //    use std::path::Path;
 
     if let Some(parent) = Path::new(path).parent() {
-        fs::create_dir_all(parent);
+        fs::create_dir_all(parent)?;
     }
 
 
@@ -910,67 +961,21 @@ fn create_path_and_file(path: &str) -> Result<(),Box<Error>> {
 }
 
 fn init_config(config: &Config) -> Result<(),Box<Error>>{
-    create_path_and_file(&config.syllables_to_utf8_path);
-    create_path_and_file(&config.word_database_path);
-    create_path_and_file(&config.syllables_path);
-    create_path_and_file(&config.occ_wanted_path);
-    create_path_and_file(&config.syllable_valid_pos_path);
+    create_path_and_file(&config.syllables_to_utf8_path)?;
+    create_path_and_file(&config.word_database_path)?;
+    create_path_and_file(&config.syllables_path)?;
+    create_path_and_file(&config.occ_wanted_path)?;
+    create_path_and_file(&config.syllable_valid_pos_path)?;
 
     Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests;
 
-    #[test]
-    fn test_acc(){
-        let mut lang = MyLang::new_with_config(Config::default());
-        let mut gen = RandomEngine::new(lang,RandomnessMethod::Linear);
-
-        println!("Syllables: {:?}\n\n",gen.my_lang.syllables);
-
-        {
-            fs::write("LangGenCfg/Word_Database.txt", "".as_bytes());
-        }
-
-        for i in 0..200{
-
-            gen.my_lang.recalc_real();
-            gen.recalc_adjusted_random();
-            let words= gen.create_words(2,6,10);
-            for word in &words {
-                gen.my_lang.add_to_db(word);
-            }
-
-            let mut offby = 0f64;
-
-            for syllable in &gen.my_lang.syllables {
-                let real = gen.my_lang.occ_real.get(syllable).unwrap();
-                let wanted = gen.my_lang.occ_wanted.get(syllable).unwrap();
-
-                if wanted > real {
-                    offby += (1.0 - wanted/real).abs();
-                }
-                else {
-                    offby += (1.0 - real/wanted).abs();
-                }
-            }
-
-            println!("Off by {:.1}",offby);
-        }
-
-        println!("\n---\n");
-
-        println!("syllable;wanted;real");
-
-        for syllable in &gen.my_lang.syllables {
-            let real = gen.my_lang.occ_real.get(syllable).unwrap();
-            let wanted = gen.my_lang.occ_wanted.get(syllable).unwrap();
-            println!("{};{};{}",syllable,wanted,real);
-        }
-
-    }
+fn soft_crash(msg:String){
+    eprintln!("{}",msg);
+    exit(-1);
 }
 
 fn main() -> Result<(), Box<Error>>{
@@ -985,7 +990,7 @@ fn main() -> Result<(), Box<Error>>{
     let mut my_lang = MyLang::new_with_config(config);
 
     if matches.is_present("init_config") {
-        init_config(&my_lang.config);
+        init_config(&my_lang.config)?;
         eprintln!("Config files initialized");
         return Ok(())
     }
@@ -1000,7 +1005,6 @@ fn main() -> Result<(), Box<Error>>{
     }
 
     if !validate_config(&my_lang) {
-        app.print_help()?;
         eprintln!();
         eprintln!("Config is not valid, files are corrupted or missing");
 
@@ -1008,7 +1012,7 @@ fn main() -> Result<(), Box<Error>>{
     }
 
     if let Some(matches) = matches.subcommand_matches("gen"){
-        return handle_gen(matches,RandomEngine::new(my_lang,RandomnessMethod::Linear));
+        return handle_gen(matches,RandomEngine::new(my_lang,Box::new(CalculatedRandom::new())));
     }
     else if let Some(matches) = matches.subcommand_matches("db"){
         return handle_db(matches,&mut my_lang);
