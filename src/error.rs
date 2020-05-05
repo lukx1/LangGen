@@ -4,7 +4,7 @@ type OsPath = String;
 pub enum LangErr {
     FileEmpty(OsPath),
     InvalidSyllable(String),
-    InvalidSyllablePosition(String,usize),
+    InvalidSyllablePosition(String, usize),
     Io(std::io::Error),
     ParseIntError(std::num::ParseIntError),
 }
@@ -16,5 +16,7 @@ impl From<std::io::Error> for LangErr {
 }
 
 impl From<std::num::ParseIntError> for LangErr {
-    fn from(err: std::num::ParseIntError) -> Self{ LangErr::ParseIntError(err)}
+    fn from(err: std::num::ParseIntError) -> Self {
+        LangErr::ParseIntError(err)
+    }
 }
