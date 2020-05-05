@@ -4,11 +4,10 @@ use std::fs;
 use crate::syllables::SyllablePosition;
 use crate::Result;
 use std::collections::HashMap;
-use crate::config::{LangConfig, InitableConfig};
+use crate::config::LangConfig;
 
 const APP_INFO: AppInfo = AppInfo {name:"LangGen", author:"LukxNet"};
 
-const CFG_NAME: &'static str = "LangGen.toml";
 const SYLLABLES_NAME:&'static str= "Syllables.txt";
 const OCC_WANTED_NAME:&'static str= "Wanted.txt";
 const SYLLABLE_VALID_POS_NAME:&'static str= "SyllablePos.txt";
@@ -17,10 +16,6 @@ const SYLLABLES_TO_UTF8_NAME:&'static str= "SyllablesToUTF8.txt";
 
 fn get_cfg_root() -> PathBuf {
     app_root(AppDataType::UserData,&APP_INFO).unwrap()
-}
-
-fn get_cfg_path() -> PathBuf {
-    get_cfg_root().join(CFG_NAME)
 }
 
 fn get_syllables_path() -> PathBuf {
@@ -56,8 +51,6 @@ impl Default for FileSystemConfig {
             utf8_to_ascii: HashMap::new(),
             wanted: HashMap::new(),
             database: Vec::new(),
-            app_name: APP_INFO.name.to_string(),
-            app_author: APP_INFO.author.to_string(),
             syllables_path: pbts(get_syllables_path()),
             wanted_path: pbts(get_occ_wanted_path()),
             syllable_pos_path: pbts(get_syllables_valid_pos_path()),
@@ -74,9 +67,6 @@ pub struct FileSystemConfig {
     utf8_to_ascii: HashMap<String,String>,
     wanted: HashMap<String,f64>,
     database: Vec<String>,
-    // APP CONFIG
-    app_name: String,
-    app_author: String,
     // FILE PATHS
     syllables_path: String,
     syllable_pos_path: String,
@@ -196,8 +186,12 @@ impl LangConfig for FileSystemConfig {
         self.database = db;
     }
 
-    fn append_database(&mut self, words: Vec<String>){
-        words.into_iter().for_each(|w| self.database.push(w));
+    fn append_database(&mut self, words: &Vec<String>){
+        words.into_iter().for_each(|w| self.database.push(w.to_string()));
+    }
+
+    fn delete_from_database(&mut self, word: &str) -> bool {
+        self.database.remove_item(&word.to_string()).is_some()
     }
 
     fn load(&mut self) -> Result<()>{

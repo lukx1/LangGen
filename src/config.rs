@@ -1,9 +1,7 @@
+use std::collections::HashMap;
+
 use crate::Result;
 use crate::syllables::SyllablePosition;
-use crate::filesystemconfig::FileSystemConfig;
-use std::collections::HashMap;
-use std::fs;
-use crate::error::LangErr;
 
 pub trait LangConfig {
     fn syllables(&self) -> &Vec<String>;
@@ -20,7 +18,8 @@ pub trait LangConfig {
 
     fn database(&self) -> &Vec<String>;
     fn set_database(&mut self, db: Vec<String>);
-    fn append_database(&mut self, words: Vec<String>);
+    fn append_database(&mut self, words: &Vec<String>);
+    fn delete_from_database(&mut self, word: &str) -> bool;
 
     fn load(&mut self) -> Result<()>;
     fn flush(&mut self) -> Result<()>;

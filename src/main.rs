@@ -1,4 +1,5 @@
 #![feature(nll)]
+#![feature(vec_remove_item)]
 
 extern crate clap;
 extern crate rand;
@@ -10,19 +11,25 @@ mod syllables;
 mod filesystemconfig;
 mod rangen;
 mod calculatedrandom;
-mod commands;
+mod realrandom;
+mod gencmd;
+mod dbcmd;
+mod configcmd;
 
-use clap::{App, Arg, SubCommand};
+use clap::{App, Arg, SubCommand, ArgMatches};
 use crate::config::LangConfig;
-use std::any::Any;
 use std::collections::HashMap;
-use crate::commands::GenerateCmd;
+use crate::gencmd::GenerateCmd;
+use crate::filesystemconfig::FileSystemConfig;
+use crate::dbcmd::DatabaseCmd;
+use crate::error::LangErr;
+use crate::configcmd::ConfigCmd;
 
-type Result<U> = std::result::Result<U,crate::error::LangErr>;
+type Result<T> = std::result::Result<T,crate::error::LangErr>;
 
 fn prepare_app<'a, 'b>() -> App<'a,'b>{
     App::new("MyLang Generator")
-        .version("0.1")
+        .version("0.3")
         .author("Lukx")
         .about("Generates stuff for my language")
         .subcommand(SubCommand::with_name("gen")
@@ -33,6 +40,11 @@ fn prepare_app<'a, 'b>() -> App<'a,'b>{
                 .help("Amount of words to generate")
                 .default_value("1")
                 .takes_value(true)
+            )
+            .arg(Arg::with_name("realrandom")
+                .long("realrandom")
+                .takes_value(false)
+                .help("Uses real RNG for all randomness")
             )
             .arg(Arg::with_name("min")
                 .short("m")
@@ -56,7 +68,8 @@ fn prepare_app<'a, 'b>() -> App<'a,'b>{
                 .conflicts_with_all(&["min","max"])
             )
             .arg(Arg::with_name("utf8")
-                .short("utf8")
+                .short("u")
+                .long("utf8")
                 .takes_value(false)
                 .help("Words will be displayed with UTF8 symbols")
             )
@@ -111,37 +124,87 @@ fn prepare_app<'a, 'b>() -> App<'a,'b>{
         )
 }
 
-fn prepare_callers() -> HashMap<&str,Box<dyn TakeAppArg>> {
+/// Loads functions to be ran when they are called by the app
+fn prepare_callers() -> TakeAppArgManager {
     let v:Vec<Box<dyn TakeAppArg>>  = vec![
-        Box::new(GenerateCmd::new())
+        Box::new(GenerateCmd::new()),
+        Box::new(DatabaseCmd::new()),
+        Box::new(ConfigCmd::new()),
     ];
 
-//    let mut result = HashMap::new(); TODO:tohle
-//    v.iter()
-//        .for_each(|c| result.insert(c.na))
+    let mut subcommands = HashMap::new();
+
+    v.into_iter()
+        .for_each(|c|
+            {subcommands.insert(c.subcommand().to_string(),c);});
+
+
+    TakeAppArgManager::new(subcommands)
 }
 
-fn main(){
-    let app = prepare_app();
-    let matches = app.get_matches();
-    let callers = prepare_callers();
-
+/// Loads language config
+fn prepare_lang_cfg() -> Box<dyn LangConfig> {
+    let mut cfg = FileSystemConfig::default();
+    cfg.load().unwrap();
+    Box::new(cfg)
 }
 
-struct TakeAppArgManager {
-    /// (Subcommand -> (Name ->) TakeAppArg)
-    data: HashMap<String,HashMap<String,Box<dyn TakeAppArg>>>
-}
+/// Called when err is encountered
+fn handle_err(err: LangErr){
+    use crate::error::LangErr::*;
 
-impl TakeAppArgManager {
-    pub fn get(&mut self,subcommand: &str, name: &str) -> Box<dyn TakeAppArg> {
-        self.data.get(subcommand).unwrap()
-            .remove(name).unwrap()
+    match err {
+        ParseIntError(e) => eprintln!("Integer could not be parsed: {:?}",e),
+        InvalidSyllable(syllable) => eprintln!("Invalid syllable {}",syllable),
+        Io(e) => eprintln!("Read or write error: {:?}",e),
+        FileEmpty(e) => eprintln!("File {} is empty",e.to_string()),
+        InvalidSyllablePosition(syllable,pos) => eprintln!("Syllable {} found in invalid position {}",syllable,pos),
     }
 }
 
+fn are_launch_args_set() -> bool {
+    std::env::args().len() > 1
+}
+
+fn main(){
+    let lang_cfg = prepare_lang_cfg();
+
+    let mut app = prepare_app();
+
+    if !are_launch_args_set() {app.print_help().unwrap();return;} // Check if any args have been set
+
+    let matches = app.get_matches();
+
+    let mut callers = prepare_callers();
+
+    let result = match matches.subcommand_name(){ // Check what subcommand was set
+        Some(sc) => callers.get(sc)
+            .do_exec(matches.subcommand_matches(sc).unwrap(),lang_cfg),
+        None => unreachable!(), // App will prevent unknown subcommands to reach this point
+    };
+
+    if result.is_err(){handle_err(result.unwrap_err());}
+}
+
+/// Contains subcommands that can be ran by this app
+struct TakeAppArgManager {
+    /// (Subcommand -> TakeAppArg)
+    subcommand_to_app_arg: HashMap<String,Box<dyn TakeAppArg>>
+}
+
+impl TakeAppArgManager {
+    pub fn new(data: HashMap<String,Box<dyn TakeAppArg>>) -> TakeAppArgManager{
+        TakeAppArgManager{
+            subcommand_to_app_arg: data
+        }
+    }
+    pub fn get(&mut self,subcommand: &str) -> &mut Box<dyn TakeAppArg> {
+        self.subcommand_to_app_arg.get_mut(subcommand).unwrap()
+    }
+}
+
+/// Implement this for every subcommand and put the implementer into prepare_callers()
 pub trait TakeAppArg {
     fn subcommand(&self) -> &str;
-    fn name(&self) -> &str;
-    fn call<T: Any + LangConfig>(&mut self, arguments: HashMap<String,Vec<String>>, cfg: &T) -> Result<()>;
+    fn do_exec(&mut self, arguments: &ArgMatches, cfg: Box<dyn LangConfig>) -> Result<()>;
 }

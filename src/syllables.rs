@@ -3,7 +3,10 @@ use crate::Result;
 use crate::config::LangConfig;
 use std::cmp;
 use crate::error::LangErr::InvalidSyllable;
+use std::collections::HashMap;
+use std::cmp::Ordering;
 
+/// Represents where in a word a syllable is
 #[derive(PartialEq)]
 pub enum SyllablePosition {
     Start,
@@ -30,14 +33,16 @@ impl From<String> for SyllablePosition {
     }
 }
 
+/// Splits a single word into syllables. Returns
+/// error if word can't be split
 pub fn split_into_syllables(word: &str, cfg: &dyn LangConfig) -> Result<Vec<String>> {
     assert!(word.trim() == word,"Whitespace in word is not allowed");
 
     let mut syllables = cfg.syllables().clone();
-    syllables.sort_by(|a,b| a.len().cmp((&b.len()))); // Longer syllables must come first
+    syllables.sort_by(|a,b| a.len().cmp(&b.len())); // Longer syllables must come first
 
-    let max_len = syllables.iter()
-        .map(String::len)
+    let max_len = syllables.iter() // Unicode characters may be longer than thay appear,
+        .map(String::len)             // this is working as intended
         .max()
         .unwrap(); // Longest syllable
 
@@ -52,7 +57,7 @@ pub fn split_into_syllables(word: &str, cfg: &dyn LangConfig) -> Result<Vec<Stri
     let mut char_len = max_len; // How many chars at once are we checking
 
     while char_count != word.len(){ // Go from last char checked to max syllable length or end of arr
-        let part = &word[char_count..cmp::max(char_len,word.len()-1)];
+        let part = &word[char_count..(char_count+cmp::min(char_len,word.len()))];
 
         if cfg.syllables().iter().any(|s| s == part) { // Part is found in syllables (iter any used instead of contains because &String != &str)
             syl_res.push(part.to_string()); // Add it to result
@@ -69,6 +74,7 @@ pub fn split_into_syllables(word: &str, cfg: &dyn LangConfig) -> Result<Vec<Stri
     Ok(syl_res)
 }
 
+/// Validates if a chosen syllable is valid at a specified position with a select length
 pub fn is_syllable_pos_valid(syllable: &str, pos: usize, len: usize, cfg: &dyn LangConfig) -> bool {
     assert!(pos <= len,"Position of syllable can't be greater than word length");
 
@@ -93,20 +99,25 @@ pub fn is_syllable_pos_valid(syllable: &str, pos: usize, len: usize, cfg: &dyn L
     }
 }
 
-pub fn is_word_valid(word: &str, cfg: &dyn LangConfig) -> Result<()> {
-    if word.trim() == "" { return Err(InvalidSyllable("".to_string()));} // Empty string
-
-    let syllables = split_into_syllables(word,cfg)?;
-
-    for (pos,syllable) in syllables.iter().enumerate() {
-        if !is_syllable_pos_valid(syllable,pos,syllables.len(),cfg) {
-            return Err(InvalidSyllable(syllable.to_string()));
-        }
-    }
-
-    Ok(())
-}
-
+//TODO:lukx this function is useful but the user can't call it
+///// Validates every syllable in a single words if it is valid. Empty string
+///// or whitespace will return an error
+//pub fn is_word_valid(word: &str, cfg: &dyn LangConfig) -> Result<()> {
+//    if word.trim() == "" { return Err(InvalidSyllable("".to_string()));} // Empty string
+//
+//    let syllables = split_into_syllables(word,cfg)?;
+//
+//    for (pos,syllable) in syllables.iter().enumerate() {
+//        if !is_syllable_pos_valid(syllable,pos,syllables.len(),cfg) {
+//            return Err(InvalidSyllable(syllable.to_string()));
+//        }
+//    }
+//
+//    Ok(())
+//}
+/// Replaces characters in word with their romanized equivalent.
+/// Returns error if word can't be split or a syllable in word can't be
+/// found in database
 pub fn romanize(word: &str, cfg: &dyn LangConfig) -> Result<String> {
     let syllables = split_into_syllables(word,cfg)?;
 
@@ -124,3 +135,78 @@ pub fn romanize(word: &str, cfg: &dyn LangConfig) -> Result<String> {
     Ok(result)
 }
 
+/// Sorts a HashMap of syllables by their occurrance and returns
+/// a descending vector of them
+pub fn syllables_sorted_by_occurrence(syllab: &HashMap<String,f64>) -> Vec<String> {
+    let mut syllables:Vec<String> = syllab.keys().cloned().collect(); // Collect only keys (syllables)
+
+    syllables.sort_by(|a,b|  // Sort them by their position inside perc, desc
+        comp_f64(syllab.get(b).unwrap(),syllab.get(a).unwrap()));
+    // Unwrap is safe because we just took them from perc HashMap
+
+    syllables
+}
+
+/// Sorts a HashMap of syllables by their occurrence and returns a descending vector of
+/// syllables by percentage of occurrance
+pub fn syllables_by_occurrence_desc(syllables: &HashMap<String,f64>) -> Vec<(String,f64)> {
+    let ss = syllables_sorted_by_occourence(syllables);
+    let mut result = Vec::with_capacity(ss.len());
+
+    for syllable in ss {
+        let oc = *syllables.get(&syllable).unwrap();
+        result.push((syllable,oc));
+    }
+
+    return result;
+}
+
+/// Counts unique syllables in database and returns their count. Syllables that are not present in
+/// the database but are present in syllables list will be added with count of 0.
+/// Returns error if any word in database can not be split into syllables.
+pub fn db_syllable_occurrences_as_count(cfg: &dyn LangConfig) -> Result<HashMap<String,u32>>{
+    use crate::syllables::*;
+
+    let mut count: HashMap<String,u32> = HashMap::new();
+
+    for word in cfg.database() {
+        let syllables = split_into_syllables(word,cfg)?;
+        for syllable in syllables {
+            count.entry(syllable)
+                .and_modify(|e| *e += 1)
+                .or_insert(1); // Increment by 1 or if not found, set to 1
+        }
+    }
+
+    if count.len() < cfg.syllables().len() { // Not every syllable is in results
+        for syllable in cfg.syllables() {
+            count.entry(syllable.to_string()) // Prob should not clone
+                .or_insert(0); // If not found insert 0 percent
+        }
+    }
+
+    Ok(count)
+}
+
+/// Converts count of syllables in into percentages. Will not work correctly if syllables with no
+/// occurrence but presence in DB are not in @count.
+pub fn db_syllable_occurrences_as_percentage(count: &HashMap<String,u32>, cfg: &dyn LangConfig) -> HashMap<String,f64> {
+    let total = count.iter().map(|(_,v)| *v).sum::<u32>() as f64; // Calculate total count
+
+    let mut result = HashMap::new();
+
+    count.iter()
+        .for_each(|(syllable,count)| { // For every syllable calculate percentage of total
+            result.insert(syllable.to_string(),*count as f64 / total);});
+
+    result
+}
+
+fn comp_f64(a: &f64, b: &f64) -> Ordering {
+    if a < b {
+        return Ordering::Less;
+    } else if a > b {
+        return Ordering::Greater;
+    }
+    Ordering::Equal
+}
