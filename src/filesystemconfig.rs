@@ -18,7 +18,7 @@ const WORD_DATABASE_NAME: &str = "Word_Database.txt";
 const SYLLABLES_TO_UTF8_NAME: &str = "SyllablesToUTF8.txt";
 
 fn get_cfg_root() -> PathBuf {
-    app_root(AppDataType::UserData, &APP_INFO).unwrap()
+    app_root(AppDataType::UserConfig, &APP_INFO).unwrap()
 }
 
 fn get_syllables_path() -> PathBuf {

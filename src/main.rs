@@ -117,7 +117,7 @@ fn prepare_app<'a, 'b>() -> App<'a, 'b> {
                 .arg(
                     Arg::with_name("list")
                         .short("l")
-                        .long("long")
+                        .long("list")
                         .help("List all words in the database")
                         .takes_value(false),
                 ),

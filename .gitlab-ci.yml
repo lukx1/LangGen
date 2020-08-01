@@ -1,0 +1,53 @@
+image: 'rustlang/rust:nightly'
+
+stages:
+  - test
+  - build
+  - deploy
+
+variables:
+  CARGO_HOME: $CI_PROJECT_DIR/cargo
+  APT_CACHE_DIR: $CI_PROJECT_DIR/apt
+
+test_rust_all:
+  stage: test
+  script:
+    - cargo -V
+    - rustup -V
+    - cargo test
+  only:
+    - develop
+
+test_rust_critical:
+  stage: test
+  script:
+    - cargo test critical
+  only:
+    - master
+
+build_rust_linux:
+  stage: build
+  script:
+    - cargo build --release
+  artifacts:
+    paths:
+      - target/release/lang_gen
+    expire_in: 3 day
+  only:
+    - master
+
+build_rust_windows:
+  stage: build
+  script:
+    - cross build --release --target x86_64-pc-windows-gnu
+  artifacts:
+    paths:
+      - target/x86_64-pc-windows-gnu/release/lang_gen
+    expire_in: 3 day
+  only:
+    - master
+
+cache:
+  paths:
+    - cargo/
+    - target/
